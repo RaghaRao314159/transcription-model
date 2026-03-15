@@ -30,6 +30,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import transformers
@@ -93,6 +97,10 @@ class DataArguments:
 class AudioTrainingArguments(transformers.TrainingArguments):
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
+    label_names: Optional[List[str]] = field(
+        default_factory=lambda: ["transcript_ids"],
+        metadata={"help": "Keys in batch that correspond to labels. transcript_ids enables eval loss."},
+    )
 
 
 # ─── Model ────────────────────────────────────────────────────────────────────
@@ -357,36 +365,31 @@ def _load_librispeech(data_args: DataArguments, n: int, split: str = "train"):
     # 1) Try hub mirror cache (fully offline)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Loading LibriSpeech ({split}) from hub mirror cache ...")
             with _force_offline():
                 ls = load_dataset(data_args.hub_dataset, "librispeech", split=hub_split)
-            logger.info(f"LibriSpeech ({split}) loaded from hub mirror cache ({len(ls)} samples)")
             return ls
         except Exception:
-            logger.info(f"LibriSpeech ({split}) not in hub mirror cache.")
+            pass
 
     # 2) Try original source cache (fully offline)
     try:
-        logger.info(f"Loading LibriSpeech ({split}) from original cache ...")
         with _force_offline():
             ls = load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
-        logger.info(f"LibriSpeech ({split}) loaded from original cache ({len(ls)} samples)")
         return ls
     except Exception:
-        logger.info(f"LibriSpeech ({split}) not in original cache.")
+        pass
 
     # 3) Try hub mirror (download)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Downloading LibriSpeech ({split}) from hub mirror: {data_args.hub_dataset} ...")
+            print(f"LibriSpeech ({split}): not in cache, downloading from hub mirror...")
             ls = load_dataset(data_args.hub_dataset, "librispeech", split=hub_split)
-            logger.info(f"LibriSpeech ({split}) loaded from hub mirror ({len(ls)} samples)")
             return ls
         except Exception as e:
             logger.warning(f"Hub mirror failed for LibriSpeech ({split}): {e}")
 
     # 4) Original source (download)
-    logger.info(f"Downloading LibriSpeech ({split}) from original source: {data_args.librispeech_dataset}")
+    print(f"LibriSpeech ({split}): not in cache, downloading from original source...")
     return load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
 
 
@@ -398,13 +401,11 @@ def _load_mls(data_args: DataArguments, n: int, split: str = "train"):
     # 1) Try hub mirror cache (fully offline)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Loading MLS ({split}) from hub mirror cache ...")
             with _force_offline():
                 mls = load_dataset(data_args.hub_dataset, "mls_eng", split=hub_split)
-            logger.info(f"MLS ({split}) loaded from hub mirror cache ({len(mls)} samples)")
             return mls
         except Exception:
-            logger.info(f"MLS ({split}) not in hub mirror cache.")
+            pass
 
     # 2) Try original source cache (fully offline): local save_to_disk or HF cache
     if split == "train":
@@ -414,34 +415,29 @@ def _load_mls(data_args: DataArguments, n: int, split: str = "train"):
         )
         if os.path.isdir(mls_local_path):
             try:
-                logger.info(f"Loading MLS ({split}) from local cache: {mls_local_path}")
                 mls = load_from_disk(mls_local_path)
                 mls = mls.select(range(min(n, len(mls))))
-                logger.info(f"MLS ({split}) loaded from local cache ({len(mls)} samples)")
                 return mls
             except Exception:
-                logger.info(f"MLS ({split}) local cache load failed.")
+                pass
     try:
-        logger.info(f"Loading MLS ({split}) from original cache ...")
         with _force_offline():
             mls = load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
-        logger.info(f"MLS ({split}) loaded from original cache ({len(mls)} samples)")
         return mls
     except Exception:
-        logger.info(f"MLS ({split}) not in original cache.")
+        pass
 
     # 3) Try hub mirror (download)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Downloading MLS ({split}) from hub mirror: {data_args.hub_dataset} ...")
+            print(f"MLS ({split}): not in cache, downloading from hub mirror...")
             mls = load_dataset(data_args.hub_dataset, "mls_eng", split=hub_split)
-            logger.info(f"MLS ({split}) loaded from hub mirror ({len(mls)} samples)")
             return mls
         except Exception as e:
             logger.warning(f"Hub mirror failed for MLS ({split}): {e}")
 
     # 4) Original source (download)
-    logger.info(f"Downloading MLS ({split}) from original source: {data_args.mls_dataset}")
+    print(f"MLS ({split}): not in cache, downloading from original source...")
     return load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
 
 
@@ -462,13 +458,14 @@ def prepare_dataset(data_args: DataArguments):
     validation split (None if no validation split is available).
     """
     n = data_args.max_samples_per_dataset
+    print("Loading datasets (LibriSpeech + MLS) from cache...")
 
     # ── train ──
     ls_train = _normalize_split(_load_librispeech(data_args, n, split="train"), "train")
     mls_train = _normalize_split(_load_mls(data_args, n, split="train"), "train")
     train_combined = concatenate_datasets([ls_train, mls_train]).shuffle(seed=42)
     train_combined = train_combined.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
-    logger.info(f"Combined train dataset: {len(train_combined)} samples")
+    print(f"Datasets ready: train={len(train_combined)}, ", end="")
 
     # ── validation (best-effort) ──
     eval_combined = None
@@ -477,14 +474,56 @@ def prepare_dataset(data_args: DataArguments):
         mls_val = _normalize_split(_load_mls(data_args, n, split="validation"), "validation")
         eval_combined = concatenate_datasets([ls_val, mls_val]).shuffle(seed=42)
         eval_combined = eval_combined.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
-        logger.info(f"Combined validation dataset: {len(eval_combined)} samples")
+        print(f"validation={len(eval_combined)}")
     except Exception as e:
+        print("validation=none")
         logger.warning(f"Could not load validation split, training without eval: {e}")
 
     return train_combined, eval_combined
 
 
 # ─── Projector save helper (handles DeepSpeed ZeRO-3 parameter gathering) ─────
+
+
+def plot_loss_curves(trainer, output_dir: str) -> bool:
+    """Plot train and eval loss vs steps, save to output_dir/loss_curves.png. Returns True if saved."""
+    history = trainer.state.log_history
+    if not history:
+        return False
+
+    train_steps, train_losses = [], []
+    eval_steps, eval_losses = [], []
+
+    for entry in history:
+        if "loss" in entry and "eval_loss" not in entry:
+            step = entry.get("step")
+            if step is not None:
+                train_steps.append(step)
+                train_losses.append(entry["loss"])
+        elif "eval_loss" in entry:
+            step = entry.get("step")
+            if step is not None:
+                eval_steps.append(step)
+                eval_losses.append(entry["eval_loss"])
+
+    if not train_steps and not eval_steps:
+        return False
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if train_steps:
+        ax.plot(train_steps, train_losses, label="Train loss", color="C0", alpha=0.8)
+    if eval_steps:
+        ax.plot(eval_steps, eval_losses, label="Val loss", color="C1", marker="o", markersize=4)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
+    ax.set_title("Train and validation loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(output_dir, "loss_curves.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return True
 
 
 def gather_projector_state_dict(model):
@@ -538,6 +577,9 @@ def train():
         format="%(asctime)s %(levelname)s %(name)s  %(message)s",
         level=logging.INFO,
     )
+    # Suppress verbose HTTP/cache logs from HF libs
+    for _name in ("httpx", "datasets", "datasets.load", "datasets.packaged_modules.cache.cache", "huggingface_hub"):
+        logging.getLogger(_name).setLevel(logging.WARNING)
     local_rank = training_args.local_rank
 
     def rank0_print(*args):
@@ -631,6 +673,12 @@ def train():
     # ── train ──
     trainer.train()
     trainer.save_state()
+
+    # ── plot loss curves (when not reporting to tensorboard/wandb) ──
+    report_to = training_args.report_to or []
+    if (not report_to or "none" in report_to) and local_rank in (0, -1):
+        if plot_loss_curves(trainer, training_args.output_dir):
+            rank0_print(f"Loss curves saved to {os.path.join(training_args.output_dir, 'loss_curves.png')}")
 
     # ── final save ──
     if model_args.stage == "a":

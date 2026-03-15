@@ -18,8 +18,8 @@ python "$SCRIPT_DIR/train_audio.py" \
     --output_dir "$SCRIPT_DIR/checkpoints/audio_stage_b" \
     --bf16 True \
     --num_train_epochs 3 \
-    --per_device_train_batch_size 8 \
-    --gradient_accumulation_steps 4 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 2 \
     --learning_rate 2e-5 \
     --weight_decay 0.0 \
     --warmup_ratio 0.03 \
@@ -29,7 +29,7 @@ python "$SCRIPT_DIR/train_audio.py" \
     --save_steps 2000 \
     --save_total_limit 2 \
     --eval_strategy steps \
-    --eval_steps 2000 \
+    --eval_steps 50 \
     --gradient_checkpointing True \
     --dataloader_num_workers 4 \
     --report_to none
