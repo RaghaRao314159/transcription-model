@@ -349,42 +349,64 @@ class _force_offline:
 
 
 def _load_librispeech(data_args: DataArguments, n: int, split: str = "train"):
-    """Load LibriSpeech with fallback: cache -> hub mirror -> original source."""
+    """Load LibriSpeech with fallback: hub mirror cache -> original cache -> hub mirror download -> original source."""
     # Map split names for the original source (LibriSpeech uses train.100)
     orig_split = f"train.100[:{n}]" if split == "train" else split
     hub_split = f"{split}[:{n}]" if split == "train" else split
 
-    # 1) Try cache (fully offline)
-    try:
-        logger.info(f"Loading LibriSpeech ({split}) from cache ...")
-        with _force_offline():
-            ls = load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
-        logger.info(f"LibriSpeech ({split}) loaded from cache ({len(ls)} samples)")
-        return ls
-    except Exception:
-        logger.info(f"LibriSpeech ({split}) not in cache.")
-
-    # 2) Try hub mirror
+    # 1) Try hub mirror cache (fully offline)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Trying hub mirror: {data_args.hub_dataset} (librispeech, {split}) ...")
+            logger.info(f"Loading LibriSpeech ({split}) from hub mirror cache ...")
+            with _force_offline():
+                ls = load_dataset(data_args.hub_dataset, "librispeech", split=hub_split)
+            logger.info(f"LibriSpeech ({split}) loaded from hub mirror cache ({len(ls)} samples)")
+            return ls
+        except Exception:
+            logger.info(f"LibriSpeech ({split}) not in hub mirror cache.")
+
+    # 2) Try original source cache (fully offline)
+    try:
+        logger.info(f"Loading LibriSpeech ({split}) from original cache ...")
+        with _force_offline():
+            ls = load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
+        logger.info(f"LibriSpeech ({split}) loaded from original cache ({len(ls)} samples)")
+        return ls
+    except Exception:
+        logger.info(f"LibriSpeech ({split}) not in original cache.")
+
+    # 3) Try hub mirror (download)
+    if data_args.hub_dataset:
+        try:
+            logger.info(f"Downloading LibriSpeech ({split}) from hub mirror: {data_args.hub_dataset} ...")
             ls = load_dataset(data_args.hub_dataset, "librispeech", split=hub_split)
             logger.info(f"LibriSpeech ({split}) loaded from hub mirror ({len(ls)} samples)")
             return ls
         except Exception as e:
             logger.warning(f"Hub mirror failed for LibriSpeech ({split}): {e}")
 
-    # 3) Original source
+    # 4) Original source (download)
     logger.info(f"Downloading LibriSpeech ({split}) from original source: {data_args.librispeech_dataset}")
     return load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
 
 
 def _load_mls(data_args: DataArguments, n: int, split: str = "train"):
-    """Load MLS English with fallback: local disk cache -> hub mirror -> original source."""
+    """Load MLS English with fallback: hub mirror cache -> original cache -> hub mirror download -> original source."""
     cache_split = f"{split}[:{n}]" if split == "train" else split
     hub_split = f"{split}[:{n}]" if split == "train" else split
 
-    # 1) Try local save_to_disk cache (only for train; val/test are small)
+    # 1) Try hub mirror cache (fully offline)
+    if data_args.hub_dataset:
+        try:
+            logger.info(f"Loading MLS ({split}) from hub mirror cache ...")
+            with _force_offline():
+                mls = load_dataset(data_args.hub_dataset, "mls_eng", split=hub_split)
+            logger.info(f"MLS ({split}) loaded from hub mirror cache ({len(mls)} samples)")
+            return mls
+        except Exception:
+            logger.info(f"MLS ({split}) not in hub mirror cache.")
+
+    # 2) Try original source cache (fully offline): local save_to_disk or HF cache
     if split == "train":
         mls_local_path = os.path.join(
             os.environ.get("HF_DATASETS_CACHE", os.path.expanduser("~/.cache/huggingface/datasets")),
@@ -399,28 +421,26 @@ def _load_mls(data_args: DataArguments, n: int, split: str = "train"):
                 return mls
             except Exception:
                 logger.info(f"MLS ({split}) local cache load failed.")
-
-    # 2) Try HF cache (fully offline)
     try:
-        logger.info(f"Loading MLS ({split}) from HF cache ...")
+        logger.info(f"Loading MLS ({split}) from original cache ...")
         with _force_offline():
             mls = load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
-        logger.info(f"MLS ({split}) loaded from cache ({len(mls)} samples)")
+        logger.info(f"MLS ({split}) loaded from original cache ({len(mls)} samples)")
         return mls
     except Exception:
-        logger.info(f"MLS ({split}) not in cache.")
+        logger.info(f"MLS ({split}) not in original cache.")
 
-    # 3) Try hub mirror
+    # 3) Try hub mirror (download)
     if data_args.hub_dataset:
         try:
-            logger.info(f"Trying hub mirror: {data_args.hub_dataset} (mls_eng, {split}) ...")
+            logger.info(f"Downloading MLS ({split}) from hub mirror: {data_args.hub_dataset} ...")
             mls = load_dataset(data_args.hub_dataset, "mls_eng", split=hub_split)
             logger.info(f"MLS ({split}) loaded from hub mirror ({len(mls)} samples)")
             return mls
         except Exception as e:
             logger.warning(f"Hub mirror failed for MLS ({split}): {e}")
 
-    # 4) Original source
+    # 4) Original source (download)
     logger.info(f"Downloading MLS ({split}) from original source: {data_args.mls_dataset}")
     return load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
 
@@ -436,7 +456,7 @@ def _normalize_split(ds, split_name):
 
 
 def prepare_dataset(data_args: DataArguments):
-    """Load LibriSpeech + MLS with fallback: cache -> hub mirror -> original source.
+    """Load LibriSpeech + MLS with fallback: hub mirror cache -> original cache -> hub mirror download -> original source.
 
     Returns (train_dataset, eval_dataset) where eval_dataset is the
     validation split (None if no validation split is available).

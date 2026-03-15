@@ -2,20 +2,20 @@
 # Stage B: End-to-end fine-tuning (MLP projector + full LLM, Whisper frozen)
 # Loads the trained projector from Stage A. Higher memory, lower LR.
 
-export HF_HOME=/workspace/.cache/huggingface
-export HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
+export HF_HOME=~/.cache/huggingface
+export HF_DATASETS_CACHE=~/.cache/huggingface/datasets
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python "$SCRIPT_DIR/train_audio.py" \
     --stage b \
-    --pretrained_projector /workspace/checkpoints/audio_stage_a/audio_projector.bin \
+    --pretrained_projector "$SCRIPT_DIR/checkpoints/audio_stage_a/audio_projector.bin" \
     --whisper_model openai/whisper-base \
     --llm_model Qwen/Qwen3-1.7B \
     --pool_kernel 4 \
     --attn_implementation sdpa \
     --max_samples_per_dataset 25000 \
     --prompt_text "Transcribe:" \
-    --output_dir /workspace/checkpoints/audio_stage_b \
+    --output_dir "$SCRIPT_DIR/checkpoints/audio_stage_b" \
     --bf16 True \
     --num_train_epochs 3 \
     --per_device_train_batch_size 8 \
