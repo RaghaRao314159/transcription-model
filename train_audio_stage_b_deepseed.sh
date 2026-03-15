@@ -6,7 +6,8 @@ export HF_HOME=/workspace/.cache/huggingface
 export HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python "$SCRIPT_DIR/train_audio.py" \
+deepspeed "$SCRIPT_DIR/train_audio.py" \
+    --deepspeed ./scripts/zero2.json \
     --stage b \
     --pretrained_projector /workspace/checkpoints/audio_stage_a/audio_projector.bin \
     --whisper_model openai/whisper-base \

@@ -6,7 +6,8 @@ export HF_HOME=/workspace/.cache/huggingface
 export HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python "$SCRIPT_DIR/train_audio.py" \
+deepspeed "$SCRIPT_DIR/train_audio.py" \
+    --deepspeed ./scripts/zero2.json \
     --stage a \
     --whisper_model openai/whisper-base \
     --llm_model Qwen/Qwen3-1.7B \
@@ -17,9 +18,8 @@ python "$SCRIPT_DIR/train_audio.py" \
     --output_dir /workspace/checkpoints/audio_stage_a \
     --bf16 True \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 8 \
-    --gradient_checkpointing True \
+    --per_device_train_batch_size 32 \
+    --gradient_accumulation_steps 1 \
     --learning_rate 2e-3 \
     --weight_decay 0.0 \
     --warmup_ratio 0.03 \

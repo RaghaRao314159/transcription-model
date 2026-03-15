@@ -40,7 +40,7 @@ from transformers import (
     WhisperFeatureExtractor,
     Trainer,
 )
-from datasets import load_dataset, concatenate_datasets, Audio
+from datasets import load_dataset, load_from_disk, concatenate_datasets, Audio
 from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,10 @@ class ModelArguments:
 class DataArguments:
     max_samples_per_dataset: int = field(default=25000)
     prompt_text: str = field(default="Transcribe:")
+    hub_dataset: str = field(
+        default="RaghaRao314159/transcription-model",
+        metadata={"help": "HF hub mirror repo with librispeech/mls_eng configs. Tried before original sources."},
+    )
     mls_dataset: str = field(default="parler-tts/mls_eng")
     librispeech_dataset: str = field(default="openslr/librispeech_asr")
 
@@ -325,31 +329,139 @@ class AudioDataCollator:
 # ─── Data preparation ────────────────────────────────────────────────────────
 
 
+class _force_offline:
+    """Context manager that forces fully-offline mode in datasets + huggingface_hub."""
+
+    def __enter__(self):
+        import datasets.config as _dc
+        from huggingface_hub import constants as _hc
+        self._old_ds = _dc.HF_DATASETS_OFFLINE
+        self._old_hub = _hc.HF_HUB_OFFLINE
+        _dc.HF_DATASETS_OFFLINE = True
+        _hc.HF_HUB_OFFLINE = True
+        return self
+
+    def __exit__(self, *exc):
+        import datasets.config as _dc
+        from huggingface_hub import constants as _hc
+        _dc.HF_DATASETS_OFFLINE = self._old_ds
+        _hc.HF_HUB_OFFLINE = self._old_hub
+
+
+def _load_librispeech(data_args: DataArguments, n: int, split: str = "train"):
+    """Load LibriSpeech with fallback: cache -> hub mirror -> original source."""
+    # Map split names for the original source (LibriSpeech uses train.100)
+    orig_split = f"train.100[:{n}]" if split == "train" else split
+    hub_split = f"{split}[:{n}]" if split == "train" else split
+
+    # 1) Try cache (fully offline)
+    try:
+        logger.info(f"Loading LibriSpeech ({split}) from cache ...")
+        with _force_offline():
+            ls = load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
+        logger.info(f"LibriSpeech ({split}) loaded from cache ({len(ls)} samples)")
+        return ls
+    except Exception:
+        logger.info(f"LibriSpeech ({split}) not in cache.")
+
+    # 2) Try hub mirror
+    if data_args.hub_dataset:
+        try:
+            logger.info(f"Trying hub mirror: {data_args.hub_dataset} (librispeech, {split}) ...")
+            ls = load_dataset(data_args.hub_dataset, "librispeech", split=hub_split)
+            logger.info(f"LibriSpeech ({split}) loaded from hub mirror ({len(ls)} samples)")
+            return ls
+        except Exception as e:
+            logger.warning(f"Hub mirror failed for LibriSpeech ({split}): {e}")
+
+    # 3) Original source
+    logger.info(f"Downloading LibriSpeech ({split}) from original source: {data_args.librispeech_dataset}")
+    return load_dataset(data_args.librispeech_dataset, "clean", split=orig_split)
+
+
+def _load_mls(data_args: DataArguments, n: int, split: str = "train"):
+    """Load MLS English with fallback: local disk cache -> hub mirror -> original source."""
+    cache_split = f"{split}[:{n}]" if split == "train" else split
+    hub_split = f"{split}[:{n}]" if split == "train" else split
+
+    # 1) Try local save_to_disk cache (only for train; val/test are small)
+    if split == "train":
+        mls_local_path = os.path.join(
+            os.environ.get("HF_DATASETS_CACHE", os.path.expanduser("~/.cache/huggingface/datasets")),
+            "mls_eng_local",
+        )
+        if os.path.isdir(mls_local_path):
+            try:
+                logger.info(f"Loading MLS ({split}) from local cache: {mls_local_path}")
+                mls = load_from_disk(mls_local_path)
+                mls = mls.select(range(min(n, len(mls))))
+                logger.info(f"MLS ({split}) loaded from local cache ({len(mls)} samples)")
+                return mls
+            except Exception:
+                logger.info(f"MLS ({split}) local cache load failed.")
+
+    # 2) Try HF cache (fully offline)
+    try:
+        logger.info(f"Loading MLS ({split}) from HF cache ...")
+        with _force_offline():
+            mls = load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
+        logger.info(f"MLS ({split}) loaded from cache ({len(mls)} samples)")
+        return mls
+    except Exception:
+        logger.info(f"MLS ({split}) not in cache.")
+
+    # 3) Try hub mirror
+    if data_args.hub_dataset:
+        try:
+            logger.info(f"Trying hub mirror: {data_args.hub_dataset} (mls_eng, {split}) ...")
+            mls = load_dataset(data_args.hub_dataset, "mls_eng", split=hub_split)
+            logger.info(f"MLS ({split}) loaded from hub mirror ({len(mls)} samples)")
+            return mls
+        except Exception as e:
+            logger.warning(f"Hub mirror failed for MLS ({split}): {e}")
+
+    # 4) Original source
+    logger.info(f"Downloading MLS ({split}) from original source: {data_args.mls_dataset}")
+    return load_dataset(data_args.mls_dataset, split=cache_split, trust_remote_code=True)
+
+
+def _normalize_split(ds, split_name):
+    """Shuffle, normalise column names, keep only audio+text."""
+    ds = ds.shuffle(seed=42)
+    if "transcript" in ds.column_names:
+        ds = ds.rename_column("transcript", "text")
+    ds = ds.select_columns(["audio", "text"])
+    ds = ds.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
+    return ds
+
+
 def prepare_dataset(data_args: DataArguments):
-    """Download, combine, and normalise LibriSpeech + MLS into one HF dataset."""
+    """Load LibriSpeech + MLS with fallback: cache -> hub mirror -> original source.
+
+    Returns (train_dataset, eval_dataset) where eval_dataset is the
+    validation split (None if no validation split is available).
+    """
     n = data_args.max_samples_per_dataset
 
-    logger.info("Loading LibriSpeech (clean-100) ...")
-    ls = load_dataset(
-        data_args.librispeech_dataset, "clean",
-        split=f"train.clean.100[:{n}]", trust_remote_code=True,
-    )
-    ls = ls.shuffle(seed=42)
-    ls = ls.select_columns(["audio", "text"])
+    # ── train ──
+    ls_train = _normalize_split(_load_librispeech(data_args, n, split="train"), "train")
+    mls_train = _normalize_split(_load_mls(data_args, n, split="train"), "train")
+    train_combined = concatenate_datasets([ls_train, mls_train]).shuffle(seed=42)
+    train_combined = train_combined.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
+    logger.info(f"Combined train dataset: {len(train_combined)} samples")
 
-    logger.info("Loading MLS English ...")
-    mls = load_dataset(
-        data_args.mls_dataset, split=f"train[:{n}]", trust_remote_code=True,
-    )
-    mls = mls.shuffle(seed=42)
-    if "transcript" in mls.column_names:
-        mls = mls.rename_column("transcript", "text")
-    mls = mls.select_columns(["audio", "text"])
+    # ── validation (best-effort) ──
+    eval_combined = None
+    try:
+        ls_val = _normalize_split(_load_librispeech(data_args, n, split="validation"), "validation")
+        mls_val = _normalize_split(_load_mls(data_args, n, split="validation"), "validation")
+        eval_combined = concatenate_datasets([ls_val, mls_val]).shuffle(seed=42)
+        eval_combined = eval_combined.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
+        logger.info(f"Combined validation dataset: {len(eval_combined)} samples")
+    except Exception as e:
+        logger.warning(f"Could not load validation split, training without eval: {e}")
 
-    combined = concatenate_datasets([ls, mls]).shuffle(seed=42)
-    combined = combined.cast_column("audio", Audio(sampling_rate=WHISPER_SAMPLE_RATE))
-    logger.info(f"Combined dataset: {len(combined)} samples")
-    return combined
+    return train_combined, eval_combined
 
 
 # ─── Projector save helper (handles DeepSpeed ZeRO-3 parameter gathering) ─────
@@ -478,8 +590,12 @@ def train():
 
     # ── data ──
     rank0_print("Preparing dataset ...")
-    hf_dataset = prepare_dataset(data_args)
-    train_dataset = AudioTranscriptionDataset(hf_dataset, feature_extractor, tokenizer)
+    hf_train, hf_eval = prepare_dataset(data_args)
+    train_dataset = AudioTranscriptionDataset(hf_train, feature_extractor, tokenizer)
+    eval_dataset = (
+        AudioTranscriptionDataset(hf_eval, feature_extractor, tokenizer)
+        if hf_eval is not None else None
+    )
     collator = AudioDataCollator(pad_id=tokenizer.pad_token_id)
 
     # ── trainer ──
@@ -487,8 +603,9 @@ def train():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     # ── train ──
