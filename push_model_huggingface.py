@@ -1,12 +1,10 @@
 import argparse
 import gc
-import json
 import shutil
 from pathlib import Path
 
 import torch
 from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError
 from safetensors.torch import load_file, save_file
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, WhisperConfig, WhisperFeatureExtractor
 
@@ -16,19 +14,6 @@ from train_audio import AudioTranscriptionModel as TrainingAudioTranscriptionMod
 
 DEFAULT_REPO_ID = "RaghaRao314159/transcription-models"
 DEFAULT_STAGES = ("stage_a", "stage_b")
-LEGACY_STAGE_FOLDERS = ("audio_stage_b",)
-LEGACY_ROOT_FILES = (
-    "audio_projector.bin",
-    "chat_template.jinja",
-    "config.json",
-    "export_manifest.json",
-    "loss_curves.png",
-    "model.safetensors",
-    "preprocessor_config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "trainer_state.json",
-)
 
 
 def parse_args():
@@ -48,7 +33,6 @@ def parse_args():
     parser.add_argument("--stages", default="stage_a,stage_b")
     parser.add_argument("--package-dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--skip-push", action="store_true")
-    parser.add_argument("--cleanup-legacy-layout", action="store_true")
     return parser.parse_args()
 
 
@@ -316,34 +300,6 @@ def push_repo_layout(repo_layout_dir: Path, args):
         commit_message=args.commit_message,
     )
 
-
-def cleanup_legacy_layout(args):
-    api = HfApi()
-    for folder in LEGACY_STAGE_FOLDERS:
-        try:
-            api.delete_folder(
-                folder,
-                repo_id=args.repo_id,
-                repo_type="model",
-                commit_message=f"Remove legacy {folder} folder",
-            )
-        except HfHubHTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                raise
-
-    for path in LEGACY_ROOT_FILES:
-        try:
-            api.delete_file(
-                path,
-                repo_id=args.repo_id,
-                repo_type="model",
-                commit_message=f"Remove legacy root file {path}",
-            )
-        except HfHubHTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                raise
-
-
 def main():
     args = parse_args()
     stages = parse_stages(args.stages)
@@ -364,10 +320,6 @@ def main():
         print(f"Commit URL: {commit_url}")
     if oid:
         print(f"Commit OID: {oid}")
-
-    if args.cleanup_legacy_layout:
-        cleanup_legacy_layout(args)
-        print("Legacy root-level package files removed.")
 
 
 if __name__ == "__main__":
