@@ -86,7 +86,7 @@ class DataArguments:
     max_samples_per_dataset: int = field(default=25000)
     prompt_text: str = field(default="Transcribe:")
     hub_dataset: str = field(
-        default="RaghaRao314159/transcription-model",
+        default="RaghaRao314159/transcription-dataset",
         metadata={"help": "HF hub mirror repo with librispeech/mls_eng configs. Tried before original sources."},
     )
     mls_dataset: str = field(default="parler-tts/mls_eng")
@@ -561,7 +561,7 @@ class AudioTrainer(Trainer):
                 torch.save(proj_state, os.path.join(ckpt_dir, "audio_projector.bin"))
             self.state.save_to_json(os.path.join(ckpt_dir, "trainer_state.json"))
         else:
-            super()._save_checkpoint(model, trial, metrics)
+            super()._save_checkpoint(model, trial)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+# Generated model artifacts
+artifacts/
+checkpoints/audio_stage_a/
+checkpoints/audio_stage_b/

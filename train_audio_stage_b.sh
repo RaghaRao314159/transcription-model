@@ -4,9 +4,12 @@
 
 export HF_HOME=~/.cache/huggingface
 export HF_DATASETS_CACHE=~/.cache/huggingface/datasets
+# Ensure both GPUs are visible so each process gets its own (adjust if using different GPUs)
+export CUDA_VISIBLE_DEVICES=0,1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python "$SCRIPT_DIR/train_audio.py" \
+# Use all GPUs (adjust --num_processes if needed)
+accelerate launch --num_processes 2 "$SCRIPT_DIR/train_audio.py" \
     --stage b \
     --pretrained_projector "$SCRIPT_DIR/checkpoints/audio_stage_a/audio_projector.bin" \
     --whisper_model openai/whisper-base \
@@ -26,10 +29,11 @@ python "$SCRIPT_DIR/train_audio.py" \
     --lr_scheduler_type cosine \
     --logging_steps 1 \
     --save_strategy steps \
-    --save_steps 2000 \
+    --save_steps 20000 \
     --save_total_limit 2 \
     --eval_strategy steps \
     --eval_steps 50 \
     --gradient_checkpointing True \
+    --ddp_find_unused_parameters False \
     --dataloader_num_workers 4 \
     --report_to none

@@ -12,7 +12,7 @@ Usage:
 import os
 from datasets import load_dataset, DatasetDict
 
-HUB_REPO = "RaghaRao314159/transcription-model"
+HUB_REPO = "RaghaRao314159/transcription-dataset"
 CONFIGS = ["librispeech", "mls_eng"]
 VAL_SIZE = 500
 TEST_SIZE = 500
